@@ -17,13 +17,15 @@ import curses
 import heapq
 import difflib
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Type
 
-from sage.all import libgap, Integer  # type: ignore[import]
-from sage.parallel.decorate import fork
+try:
+    from sage.all import libgap, Integer  # type: ignore[import]
+    from build_cache import _marks_from_gap_group_or_string
+except ImportError:
+    libgap, Integer, _marks_from_gap_group_or_string = None, None, None
 
 from tom_store import TomStore, triples_from_dense
-from build_cache import _marks_from_gap_group_or_string
 
 
 _DEFAULT_DB = os.path.join(
@@ -35,8 +37,9 @@ _MATCH_CUTOFF = 0.6  # Minimum similarity ratio for fuzzy search (0 to 1)
 # Global dict of stores for TOM data, shared across all BurnsideRing instances
 _stores: Dict[str, TomStore] = {}
 
-# Load TomLib globally
-libgap.LoadPackage("tomlib")
+if libgap is not None:
+    # Load TomLib globally
+    libgap.LoadPackage("tomlib")
 
 
 # Load store from disk and add to global dict
@@ -61,6 +64,9 @@ def _resolve(
             data.group_order,
             "database",
         )
+
+    if libgap is None or _marks_from_gap_group_or_string is None:
+        return None  # Cannot resolve without libgap
 
     # Try to get marks
     marks = _marks_from_gap_group_or_string(name)
@@ -90,7 +96,7 @@ def _resolve(
 class BurnsideRing:
     def __init__(
         self,
-        group: Union[str, libgap.GapObj],
+        group: Union[str, object],
         name=None,
         cache_result=False,
         store_path=_DEFAULT_DB,
@@ -109,6 +115,11 @@ class BurnsideRing:
 
         # Compute marks directly if input is a GAP group object
         else:
+            if libgap is None or _marks_from_gap_group_or_string is None:
+                raise RuntimeError(
+                    "libgap is required to compute table of marks from a GAP group object."
+                )
+
             marks = _marks_from_gap_group_or_string(group)
             if marks is None:
                 raise ValueError(
@@ -247,7 +258,7 @@ class BurnsideRing:
         )
 
     # Access i-th transitive generator [G/H_i] (0-indexed from smallest to largest)
-    def transitive(self, i: Union[int, Integer]):
+    def transitive(self, i: int):
         return BurnsideElement(self, i)
 
     # Name of group
@@ -264,6 +275,10 @@ class BurnsideRing:
     @property
     def one(self):
         return BurnsideElement(self, self._rank - 1)
+
+    @property
+    def source(self):
+        return self._source
 
     # Rank of Burnside Ring = number of conjugacy classes of subgroups
     @property
@@ -438,11 +453,11 @@ class BurnsideElement:
     def __init__(
         self,
         ring: BurnsideRing,
-        orbit_coeffs: Union[Dict[int, int], int, Integer],
+        orbit_coeffs: Union[Dict[int, int], int],
     ):
         self.ring: BurnsideRing = ring
 
-        if isinstance(orbit_coeffs, (int, Integer)):
+        if isinstance(orbit_coeffs, (int, Integer if Integer is not None else int)):
             orbit_coeffs = int(orbit_coeffs)  # type: ignore
             if orbit_coeffs < 0 or orbit_coeffs >= ring.rank:
                 raise ValueError(
@@ -488,7 +503,7 @@ class BurnsideElement:
         )
 
     # Helper for accessing individual ghost coordinates (0-indexed)
-    def mark(self, j: Union[int, Integer]) -> int:
+    def mark(self, j: int) -> int:
         return self.ghost.get(int(j), 0)
 
     # Addition is component-wise in orbit basis
@@ -575,8 +590,8 @@ class BurnsideElement:
         return BurnsideElement._from_orbit_and_ghost(self.ring, result, ghost_result)
 
     # Supports scalar multipliction by integers and BurnsideRing multiplication
-    def __mul__(self, other: Union[int, Integer, BurnsideElement]):
-        if isinstance(other, (int, Integer)):
+    def __mul__(self, other: Union[int, BurnsideElement]):
+        if isinstance(other, (int, Integer if Integer is not None else int)):
             other = int(other)  # type: ignore
 
             if self._ghost is not None:
@@ -611,12 +626,12 @@ class BurnsideElement:
             self.ring, self.ring._ghost_to_orbit(ghost_prod), ghost_prod
         )
 
-    def __rmul__(self, scalar: Union[int, Integer]):
+    def __rmul__(self, scalar: int):
         return self.__mul__(scalar)
 
     # Rather than implementing repeated multiplication, we can use the fact that ghost map is a ring homomorphism
     # So, we can just exponentiate ghost coordinates and then convert back
-    def __pow__(self, n: Union[int, Integer]):
+    def __pow__(self, n: int):
         n = int(n)  # Convert to Python int immediately
         if n < 0:
             raise ValueError("Exponent must be a non-negative integer.")
