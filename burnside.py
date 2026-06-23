@@ -342,10 +342,7 @@ class BurnsideRing:
 
         column_labels = [f"[{self._name}/{n}]" for n in self._subgroup_names]
 
-        cell_w = max(
-            max(len(str(v)) for row in self._rows for v in row.values()),
-            max(len(l) for l in self._subgroup_names),
-        )
+        cell_w = max(len(l) for l in column_labels) + 2
         header = " " * cell_w + "".join(l.rjust(cell_w) for l in self._subgroup_names)
         print(f"\nTable of marks for {self._name}  (source: {self._source})")
         print("-" * len(header))
