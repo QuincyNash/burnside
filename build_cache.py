@@ -33,7 +33,7 @@ def _compute_description(tom, i: int) -> str:
 
 # Compute table of marks using GAP
 def _marks_from_gap_group_or_string(
-    gap_group: Union[str, object],
+    gap_group: Union[str, object], skip_descriptions=True
 ) -> Optional[Tuple[List[List[int]], List[int], List[str], int]]:
     tom = libgap.TableOfMarks(gap_group)
     if str(tom) == "fail":
@@ -45,19 +45,23 @@ def _marks_from_gap_group_or_string(
 
     orders = [int(o) for o in libgap.OrdersTom(tom)]
 
-    # Get subgroup names using GAP's StructureDescription for each subgroup representative
     subgroup_names: List[str] = []
-    for i in tqdm(range(1, len(orders) + 1), desc="Getting subgroup names"):
-        desc = _compute_description(tom, i)
+    if skip_descriptions:
+        for i in range(1, len(orders) + 1):
+            subgroup_names.append(f"(order: {orders[i - 1]})")
+    else:
+        # Get subgroup names using GAP's StructureDescription for each subgroup representative
+        for i in tqdm(range(1, len(orders) + 1), desc="Getting subgroup names"):
+            desc = _compute_description(tom, i)
 
-        # If timeout occured, fallback to order of subgroup for description
-        if desc == "NO DATA (timed out)":
-            desc = f"(order: {orders[i - 1]})"
-        else:
-            # Remove spaces from GAP description for consistency
-            desc = desc.replace(" ", "")
+            # If timeout occured, fallback to order of subgroup for description
+            if desc == "NO DATA (timed out)":
+                desc = f"(order: {orders[i - 1]})"
+            else:
+                # Remove spaces from GAP description for consistency
+                desc = desc.replace(" ", "")
 
-        subgroup_names.append(desc)
+            subgroup_names.append(desc)
 
     # Search for duplicates and qualify with index if necessary
     name_counts = {}
@@ -80,7 +84,7 @@ def try_store(store: TomStore, name: str, gap_group: object = None, source="comp
     try:
         # Load group if defined, otherwise try to compute from name
         result = _marks_from_gap_group_or_string(
-            gap_group if gap_group is not None else name
+            gap_group if gap_group is not None else name, False
         )
         if result is None:
             print(f"Error: {name} (GAP failed to compute TOM)")
@@ -159,7 +163,6 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--rebuild",
-        type=bool,
         action="store_true",
         help="Clear existing cache and recompute everything",
     )
@@ -171,7 +174,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--db",
-        type=str,
         default="tom_cache.sqlite",
         help="Path to sqlite database (default: tom_cache.sqlite)",
     )
