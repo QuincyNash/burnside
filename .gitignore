@@ -1,0 +1,6 @@
+.DS_Store
+/__pycache__
+tom_cache2.sqlite
+fill_missing_descriptions.py
+something.py
+adams.py
