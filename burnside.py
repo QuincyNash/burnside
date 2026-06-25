@@ -16,7 +16,6 @@ import re
 import curses
 import heapq
 import difflib
-from tqdm import tqdm
 from sympy import divisors
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Union, Type
