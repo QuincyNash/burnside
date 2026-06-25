@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS marks (
     subgroup_orders  TEXT NOT NULL,
     subgroup_names   TEXT NOT NULL,
     num_nonzero      INTEGER NOT NULL,
+    closed           INTEGER NOT NULL DEFAULT 0,
     blob             BLOB NOT NULL
 );
 """
@@ -106,8 +107,8 @@ class TomStore:
 
         self._conn.execute(
             "INSERT OR REPLACE INTO marks "
-            "(name, group_order, rank, subgroup_orders, subgroup_names, num_nonzero, blob) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(name, group_order, rank, subgroup_orders, subgroup_names, num_nonzero, closed, blob) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 str(int(group_order)),
@@ -115,6 +116,7 @@ class TomStore:
                 json.dumps(list(subgroup_orders)),  # Stored as JSON string
                 json.dumps(list(subgroup_names or [])),  # Optional subgroup names
                 len(triples),
+                0,  # closed column, default to 0
                 blob,
             ),
         )
@@ -177,6 +179,24 @@ class TomStore:
         )
         self._mem[name] = data
         return data
+
+    # Helper to set the closed status of a group in the store
+    def set_closed(self, name: str, value: bool = True):
+        self._conn.execute(
+            "UPDATE marks SET closed = ? WHERE name = ?",
+            (int(value), name),
+        )
+        self._conn.commit()
+        self._mem.pop(name, None)
+
+    # Helper to check if a group is marked as closed in the store
+    def is_closed(self, name: str) -> bool:
+        cur = self._conn.execute(
+            "SELECT closed FROM marks WHERE name = ?",
+            (name,),
+        )
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
 
     # Get all names in store (can be slow for large databases)
     def names(self) -> List[str]:

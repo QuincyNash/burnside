@@ -16,14 +16,22 @@ import re
 import curses
 import heapq
 import difflib
+from tqdm import tqdm
+from sympy import divisors
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Union, Type
 
 try:
-    from sage.all import libgap, Integer  # type: ignore[import]
+    from sage.all import libgap, Integer, matrix, ZZ  # type: ignore[import]
     from build_cache import _marks_from_gap_group_or_string
 except ImportError:
-    libgap, Integer, _marks_from_gap_group_or_string = None, None, None
+    libgap, Integer, matrix, ZZ, _marks_from_gap_group_or_string = (
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 from tom_store import TomStore, triples_from_dense
 
@@ -100,6 +108,7 @@ class BurnsideRing:
         name=None,
         cache_result=False,
         store_path=_DEFAULT_DB,
+        skip_descriptions=True,
     ):
         self._name = name or (group if isinstance(group, str) else "G")
         store = _get_store(store_path)
@@ -111,7 +120,8 @@ class BurnsideRing:
                 raise ValueError(
                     f"Could not resolve group '{group}' to a table of marks. Not found in cache, TomLib, or SmallGroup(n,k)."
                 )
-            self._source = marks[3]
+            self._source = marks[-1]
+            triples = marks[0]
 
         # Compute marks directly if input is a GAP group object
         else:
@@ -120,7 +130,9 @@ class BurnsideRing:
                     "libgap is required to compute table of marks from a GAP group object."
                 )
 
-            marks = _marks_from_gap_group_or_string(group)
+            marks = _marks_from_gap_group_or_string(
+                group, skip_descriptions=skip_descriptions
+            )
             if marks is None:
                 raise ValueError(
                     f"Failed to compute table of marks directly for group '{group}')."
@@ -133,6 +145,9 @@ class BurnsideRing:
                 store.commit()
             self._source = "computed"
 
+            # Convert marks to triples
+            triples = triples_from_dense(marks[0])
+
         # Unpack marks data
         self._subgroup_orders: List[int] = marks[1]
         self._subgroup_names: List[str] = marks[2]
@@ -142,7 +157,7 @@ class BurnsideRing:
         # Store marks as a list of sparse rows
         self._rows: List[Dict[int, int]] = [{} for _ in range(self._rank)]
 
-        for row, col, value in marks[0]:
+        for row, col, value in triples:
             self._rows[row][col] = value
 
     # Formula: ghost[j] = Sum_i orbit[i] * M[i][j]
@@ -185,6 +200,9 @@ class BurnsideRing:
             q = ghost_value // diag
             orbit[row] = q
 
+            # Super important fix that was corrupting ghost coordinates for virtual g-sets
+            ghost.pop(row, None)  # Remove the diagonal entry since it's now eliminated
+
             # Subtract q * row j from ghost vector to eliminate j-th coordinate
             for col, mark_value in self._rows[row].items():
                 # Skip diagonal since we already counted it
@@ -204,6 +222,268 @@ class BurnsideRing:
                     ghost.pop(col, None)  # Remove zero entries for sparsity
 
         return orbit
+
+    # Find integer roots of a polynomial with integer coefficients
+    # First coefficient is constant, last is leading term
+    # Also sorts roots in increasing order (no duplicates)
+    def _integer_roots(self, coeffs: List[int]) -> List[int]:
+        roots = set()
+
+        if len(coeffs) == 0:
+            raise ValueError("Polynomial has infinitely many solutions")
+
+        first_nonzero = 0
+        while first_nonzero < len(coeffs) and coeffs[first_nonzero] == 0:
+            first_nonzero += 1
+            roots.add(0)  # Poly divisible by x, so 0 is a root
+
+        if first_nonzero == len(coeffs):
+            raise ValueError("Polynomial has infinitely many solutions")
+
+        # Remove leading zeros for the polynomial
+        coeffs = coeffs[first_nonzero:]
+        constant_term = coeffs[0]
+
+        # Get all positive divisors of the constant term
+        divs = divisors(constant_term)
+
+        # Find integer roots using the Rational Root Theorem
+        for r in divs:
+            # Check positive divisor
+            val = 0
+            for a in reversed(coeffs):
+                val = val * r + a
+            if val == 0:
+                roots.add(r)
+
+            # Check negative divisor
+            val = 0
+            for a in reversed(coeffs):
+                val = val * (-r) + a
+            if val == 0:
+                roots.add(-r)
+
+        return sorted(roots)
+
+    # Helper function to find all BurnsideElements whose ghost coordinates are drawn from the given integer root sets
+    def _solve_from_root_sets(
+        self, root_sets: List[List[int]]
+    ) -> List[BurnsideElement]:
+        diag = [self._rows[i][i] for i in range(self._rank)]
+        orbit: Dict[int, int] = {}
+        ghost: Dict[int, int] = {}
+        solutions: List[BurnsideElement] = []
+
+        def dfs(k):
+            # DFS finished, so we have a valid solution
+            if k < 0:
+                solutions.append(
+                    BurnsideElement._from_orbit_and_ghost(
+                        self, dict(orbit), dict(ghost)
+                    )
+                )
+                return
+
+            # Compute contribution from previously chosen orbit coefficients
+            contribution = 0
+            for j in orbit:
+                if j <= k:
+                    continue
+                contribution += self._rows[j].get(k, 0) * orbit[j]
+
+            # Iterate over all integer roots for the k-th polynomial and try to extend the solution
+            for root in root_sets[k]:
+                residual = root - contribution
+
+                if residual % diag[k] != 0:  # Not a valid orbit coefficient, skip
+                    continue
+
+                q = residual // diag[k]
+
+                old_ghost = ghost.get(k)
+                old_orbit = orbit.get(k)
+
+                if root:
+                    ghost[k] = root
+                else:
+                    ghost.pop(k, None)  # Remove zero entries for sparsity
+
+                if q:
+                    orbit[k] = q
+                else:
+                    orbit.pop(k, None)
+
+                dfs(k - 1)
+
+                if old_ghost is None:
+                    ghost.pop(k, None)
+                else:
+                    ghost[k] = old_ghost
+
+                if old_orbit is None:
+                    orbit.pop(k, None)
+                else:
+                    orbit[k] = old_orbit
+
+        dfs(self._rank - 1)
+        return solutions
+
+    # Solve polynomial with BurnsideElement coefficients, returns list of BurnsideElements that are roots
+    # Coefficients are in increasing order (first is constant term)
+    # Errors if the polynomial has infinitely many solutions (all coefficients zero)
+    def solve_poly(
+        self,
+        coeffs: List[Union[BurnsideElement, int]],
+    ) -> List[BurnsideElement]:
+        if len(coeffs) == 0:
+            raise ValueError("Polynomial has infinitely many solutions")
+
+        # Convert coeffs to genuine Burnside elements if passed as integers
+        one = self.one
+        real_coeffs: List[BurnsideElement] = [
+            coeff if isinstance(coeff, BurnsideElement) else one * int(coeff)
+            for coeff in coeffs
+        ]
+
+        # Integer roots for each polynomial of ghost coordinates
+        root_sets: List[List[int]] = []
+        for j in range(self._rank):
+            # Construct polynomial of integer coeffs given by ghost coordinates of Burnside coeffs
+            poly = [coeff.mark(j) for coeff in real_coeffs]
+
+            int_roots = self._integer_roots(poly)
+            if len(int_roots) == 0:
+                return []  # No integer roots, so no Burnside roots
+            root_sets.append(int_roots)
+
+        return self._solve_from_root_sets(root_sets)
+
+    # Find all possible special lambda structures psi^p for some p
+    # Returns a mapping from basis[i] to psi^p(basis[i]) for each solution
+    def find_psi_p(self, p: int):
+        p = int(p)
+
+        basis: List[BurnsideElement] = [self.transitive(i) for i in range(self._rank)]
+        basis_prod: List[List[BurnsideElement]] = [
+            [a * b for b in basis] for a in basis
+        ]
+        basis_pow = [b**p for b in basis]
+
+        # Precompute ghost coordinate tables once, outside the DFS.
+        # Both avoid any BurnsideElement multiplication inside search().
+        ghost_R: List[List[int]] = [
+            [basis_pow[i].mark(coord) for coord in range(self._rank)]
+            for i in range(self._rank)
+        ]
+        ghost_R_sq: List[List[int]] = [
+            [ghost_R[i][coord] ** 2 for coord in range(self._rank)]
+            for i in range(self._rank)
+        ]
+
+        # Dict of choices: chosen[k] = psi^p(basis[k])
+        # psi^p([G/G]) = [G/G] is always true
+        chosen: Dict[int, BurnsideElement] = {self._rank - 1: basis[-1]}
+        ghost_chosen: Dict[int, List[int]] = {
+            self._rank - 1: [basis[-1].mark(coord) for coord in range(self._rank)]
+        }
+        solutions: List[Dict[BurnsideElement, BurnsideElement]] = []
+
+        # Recursive search for psi^p(basis[i]) from i = self._rank - 2 to 0
+        def search(i):
+            if i == -1:
+                # Full multiplicativity check (works because A(G) is commutative and associative, so we only need to check pairs)
+                for a in range(self._rank):
+                    for b in range(a, self._rank):
+                        prod_orbit = basis_prod[a][b]._orbit
+                        for coord in range(self._rank):
+                            # LHS is psi^p(basis[a]) * psi^p(basis[b])
+                            lhs = ghost_chosen[a][coord] * ghost_chosen[b][coord]
+                            # RHS is psi^p(basis[a] * basis[b])
+                            rhs = sum(
+                                coeff * ghost_chosen[k][coord]
+                                for k, coeff in prod_orbit.items()
+                            )
+                            if lhs != rhs:
+                                return
+
+                # Convert chosen to a mapping from basis[i] to psi^p(basis[i])
+                solutions.append({basis[k]: chosen[k] for k in range(self._rank)})
+                return
+
+            # Get orbit coefficients (n_i) of basis[i]^2
+            n_i = basis_prod[i][i]._orbit
+            m = n_i.get(i, 0)
+
+            # Build quadratic polynomial:
+            # (p^2)Q^2 + (2pR_i - mp)Q + (R_i^2 - mR_i - sum_{k in chosen}n_k chosen[k]) = 0
+            root_sets = []
+            for coord in range(self._rank):
+                constant = ghost_R_sq[i][coord] - m * ghost_R[i][coord]
+                for k, coeff in n_i.items():
+                    if k in chosen:
+                        constant -= coeff * ghost_chosen[k][coord]
+                linear = 2 * p * ghost_R[i][coord] - m * p
+                int_roots = self._integer_roots([constant, linear, p * p])
+                if not int_roots:
+                    return  # No integer roots, so no solutions
+                root_sets.append(int_roots)
+
+            # Construct BurnsideElements from root_sets
+            Q_candidates = self._solve_from_root_sets(root_sets)
+
+            # Check if each root satisfies multiplicative compatibility:
+            # (R_i + pQ)chosen[j] = psi^p(basis[i] * basis[j]) for all j > i
+            for Q in Q_candidates:
+                ghost_candidate = [
+                    ghost_R[i][coord] + p * Q.mark(coord) for coord in range(self._rank)
+                ]
+                candidate: BurnsideElement = basis_pow[i] + p * Q
+
+                # Multiplicativity pruning for efficiency: check if candidate * chosen[j] = psi^p(basis[i] * basis[j]) for all j > i
+                compatible = True
+                for j, choice in chosen.items():
+                    if j == i:
+                        continue
+
+                    prod_orbit = basis_prod[i][j]._orbit
+
+                    # Check that all chosen[k] are defined for k in prod.orbit
+                    # Otherwise we cannot yet ensure multiplicativity
+                    if any(k not in chosen and k != i for k in prod_orbit):
+                        continue
+
+                    for coord in range(self._rank):
+                        lhs = ghost_candidate[coord] * ghost_chosen[j][coord]
+                        rhs = sum(
+                            coeff
+                            * (
+                                ghost_candidate[coord]
+                                if k == i
+                                else ghost_chosen[k][coord]
+                            )
+                            for k, coeff in prod_orbit.items()
+                        )
+                        if lhs != rhs:
+                            compatible = False
+                            break
+
+                    if not compatible:
+                        break  # No need to check further if already incompatible
+
+                # Failed multiplicativity check, so skip
+                if not compatible:
+                    continue
+
+                # Add to chosen and recurse
+                chosen[i] = candidate
+                ghost_chosen[i] = ghost_candidate
+                search(i - 1)
+                del chosen[i]  # For backtracking
+                del ghost_chosen[i]  # For backtracking
+
+        # Start search from index self._rank - 2 since psi^p([G/G]) = [G/G] is fixed
+        search(self._rank - 2)
+        return solutions
 
     # Try to find transitive G-set by subgroup_name, used for exploratory purposes, not programmatically
     def find(self, name: str, print_results: bool = True) -> Optional[BurnsideElement]:
@@ -295,6 +575,11 @@ class BurnsideRing:
     def subgroup_orders(self):
         return self._subgroup_orders
 
+    # Names of subgroups
+    @property
+    def subgroup_names(self):
+        return self._subgroup_names
+
     # Honest G-sets have non-negative orbit coefficients
     def is_honest(self, element):
         return all(c >= 0 for c in element.orbit)
@@ -319,6 +604,23 @@ class BurnsideRing:
                 entries[col][row] = int(value)
 
         return entries
+
+    # Inverse of the table of marks as a sage matrix
+    def M_inv(self):
+        if matrix is None or ZZ is None:
+            raise RuntimeError(
+                "Sage is required to compute the inverse of the table of marks."
+            )
+
+        # Convert to a flattened coordinate dictionary for Sage matrix constructor
+        coord_dict = {
+            (row, col): val
+            for row, data in enumerate(self._rows)
+            for col, val in data.items()
+        }
+
+        M = matrix(ZZ, self._rank, self._rank, coord_dict)
+        return M.inverse()
 
     # Display table of marks in human readable format with subgroup labels
     # Dynamic switches to an interactive display and is very useful for large ranks
@@ -504,11 +806,12 @@ class BurnsideElement:
         return self.ghost.get(int(j), 0)
 
     # Addition is component-wise in orbit basis
-    def __add__(self, other: BurnsideElement):
+    def __add__(self, other: Union[BurnsideElement, int]):
+        if isinstance(other, (int, Integer if Integer is not None else int)):
+            other = self.ring.one * int(other)  # type: ignore
+
         if not isinstance(other, BurnsideElement):
-            raise TypeError(
-                f"Unsupported operand type(s) for +: 'BurnsideElement' and '{type(other).__name__}'"
-            )
+            other = self.ring.one * other
         if self.ring is not other.ring:
             raise ValueError("Cannot add BurnsideElements from different BurnsideRings")
 
@@ -560,7 +863,10 @@ class BurnsideElement:
         )
 
     # Subtraction is just addition of negation
-    def __sub__(self, other: BurnsideElement):
+    def __sub__(self, other: Union[BurnsideElement, int]):
+        if isinstance(other, (int, Integer if Integer is not None else int)):
+            other = self.ring.one * int(other)  # type: ignore
+
         if not isinstance(other, BurnsideElement):
             raise TypeError(
                 f"Unsupported operand type(s) for -: 'BurnsideElement' and '{type(other).__name__}'"
@@ -661,6 +967,10 @@ class BurnsideElement:
             if v != 0
         ]
         return " + ".join(terms) if terms else "0"
+
+    # Hash based on ring identity and orbit coefficients
+    def __hash__(self):
+        return hash((id(self.ring), frozenset(self._orbit.items())))
 
     # Detailed readable data about an element (useful for debugging and verification)
     def show(self):
