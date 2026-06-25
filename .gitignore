@@ -1,6 +1,10 @@
 .DS_Store
 /__pycache__
-tom_cache2.sqlite
+tom_cache_big.sqlite
+tom_cache_big2.sqlite
 fill_missing_descriptions.py
 something.py
 adams.py
+test.py
+.gitattributes
+.gitignore
