@@ -137,6 +137,39 @@ def build_named(store: TomStore):
         store, "V4", libgap.DirectProduct(libgap.CyclicGroup(2), libgap.CyclicGroup(2))
     )
     try_store(store, "Q8", libgap.QuaternionGroup(8))
+    try_store(
+        store,
+        "Q8xC2",
+        libgap.DirectProduct(libgap.QuaternionGroup(8), libgap.CyclicGroup(2)),
+    )
+    try_store(
+        store,
+        "V4xC4",
+        libgap.DirectProduct(
+            libgap.DirectProduct(libgap.CyclicGroup(2), libgap.CyclicGroup(2)),
+            libgap.CyclicGroup(4),
+        ),
+    )
+    try_store(
+        store,
+        "D8xC2",
+        libgap.DirectProduct(libgap.DihedralGroup(8), libgap.CyclicGroup(2)),
+    )
+    try_store(
+        store,
+        "Q16",
+        libgap.DirectProduct(libgap.DihedralGroup(8), libgap.CyclicGroup(4)),
+    )
+
+
+def build_cyclic_products(store: TomStore):
+    print(f"Products of cyclic groups C_m x C_n for m,n = 1 to {MAX_CYCLIC}")
+
+    # Make sure m > n
+    for n in range(1, MAX_CYCLIC + 1):
+        for m in range(n + 1, MAX_CYCLIC + 1):
+            G = libgap.DirectProduct(libgap.CyclicGroup(m), libgap.CyclicGroup(n))
+            try_store(store, f"C{m}xC{n}", G)
 
 
 def build_tomlib(store: TomStore):
@@ -206,6 +239,7 @@ if __name__ == "__main__":
     build_symmetric(store)
     build_alternating(store)
     build_elementary_abelian(store)
+    # build_cyclic_products(store)
     build_named(store)
     build_tomlib(store)
 
