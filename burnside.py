@@ -389,7 +389,7 @@ class BurnsideRing:
 
         # Recursive search for psi^p(basis[i]) from i = self._rank - 2 to 0
         def search(i):
-            if i == -1:
+            if i == self._rank - 1:
                 # Full multiplicativity check (works because A(G) is commutative and associative, so we only need to check pairs)
                 for a in range(self._rank):
                     for b in range(a, self._rank):
@@ -476,12 +476,12 @@ class BurnsideRing:
                 # Add to chosen and recurse
                 chosen[i] = candidate
                 ghost_chosen[i] = ghost_candidate
-                search(i - 1)
+                search(i + 1)
                 del chosen[i]  # For backtracking
                 del ghost_chosen[i]  # For backtracking
 
         # Start search from index self._rank - 2 since psi^p([G/G]) = [G/G] is fixed
-        search(self._rank - 2)
+        search(0)
         return solutions
 
     # Try to find transitive G-set by subgroup_name, used for exploratory purposes, not programmatically

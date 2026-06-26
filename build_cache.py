@@ -167,7 +167,7 @@ def build_cyclic_products(store: TomStore):
 
     # Make sure m > n
     for n in range(1, MAX_CYCLIC + 1):
-        for m in range(n + 1, MAX_CYCLIC + 1):
+        for m in range(n, MAX_CYCLIC + 1):
             G = libgap.DirectProduct(libgap.CyclicGroup(m), libgap.CyclicGroup(n))
             try_store(store, f"C{m}xC{n}", G)
 
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     build_symmetric(store)
     build_alternating(store)
     build_elementary_abelian(store)
-    # build_cyclic_products(store)
+    build_cyclic_products(store)
     build_named(store)
     build_tomlib(store)
 
